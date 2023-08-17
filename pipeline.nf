@@ -5,18 +5,25 @@ params.target = "$baseDir/data/6hax/target.pdb"
 params.refpdb = "$baseDir/data/6hax/ref.pdb"
 params.restreint = "$baseDir/data/6hax/rest.dat"
 params.outdir = "$baseDir/result"
-
+params.glowworms = 100
+params.simulationstep = 20
 nextflow.enable.dsl=2
 
 
 log.info """\
-            PIPELINE 
-================================
+            Protac PIPELINE 
+
+    https://github.com/Romumrn/PROTAC_pipeline
+=================================================
 ligase = $params.ligase
 target = $params.target
 reference = $params.refpdb
 restreint = $params.restreint
 outdir = $params.outdir
+
+-------------------------------------------------
+glowworms number = $params.glowworms
+Simulation steps = $params.simulationstep
 """
 
 
@@ -27,15 +34,17 @@ process Setup_calculation {
         path ligase
         path target
         path restreint
+        val glowworms
+        val step
 
     output:
         path "lightdock_*" , emit: lightdock_files
         path "swarm*/*" , emit: swarm_directories
         
     """
-    lightdock3_setup.py $ligase $target -g 20 --noxt --now --noh -rst $restreint --verbose_parser 
+    lightdock3_setup.py $ligase $target -g $glowworms --noxt --now --noh -rst $restreint --verbose_parser 
     
-    lightdock3.py setup.json 10 -s fastdfire -c 20
+    lightdock3.py setup.json $step -s fastdfire -c 20
     """
 }
 
@@ -47,16 +56,20 @@ process Get_conformation_and_cluster {
         path ligase
         path target
         path lighdock_file
+        val step
         tuple val(meta), path(filepath)
 
     output:
         path "*" 
         
     """
-    lgd_generate_conformations.py $ligase $target gso_10.out 200   
-    lgd_cluster_bsas.py  gso_10.out
+    lgd_generate_conformations.py $ligase $target gso_${step}.out 200   
+    lgd_cluster_bsas.py  gso_${step}.out
 
-    for file in *; do mv -v \${file} ${meta}__\${file}; done
+    for file in *; 
+    do  
+        mv -v \${file} ${meta}__\${file}; 
+    done
     """
 }
 
@@ -83,11 +96,12 @@ process Make_swarm_dir {
     """
 }
 
-process Rank_LD{
+process Rank_LighDock{
     publishDir params.outdir
 
     input:
         path swarm_dir
+        val step
 
     output:
         path "rank_by_scoring.list" , emit: rank_by_scoring
@@ -96,8 +110,8 @@ process Rank_LD{
     s=`ls -d ./swarm_* | wc -l`;
 
     swarms=\$((s-1));	     
-    lgd_rank_swarm.py \$s 10;
-    lgd_rank.py \$s 10;
+    lgd_rank_swarm.py \$s $step;
+    lgd_rank.py \$s $step;
     """
 }
 
@@ -136,11 +150,12 @@ process Extract_best_200_docking {
 	
 
     //export PATH="/data3/rmarin/for_gilberto/pipeline/DockQ/:$PATH"
-process Dock_Q {
-    publishDir params.outdir
+process Dock_Q_scores {
+    //publishDir params.outdir
+    tag "${meta}"
 
     input:
-        path TOP200
+        tuple val(meta), path(pdb)
         path ref
         
     output:
@@ -148,100 +163,49 @@ process Dock_Q {
         
  
     """
-    PDBS=\$(ls Lightdock*_swarm* | sed 's/.pdb//g')
-    echo "Name Fnat int-RMSD Ligand-RMSD DockQ-Score" > DockQ.dat
+    DockQ.py $pdb $ref -useCA -perm1 -perm2 -verbose > DockQ_.dat
+    cat DockQ_.dat | tail -5 > DockQ_summary.dat
+    
+    #..extract data to summary file
+    Fnat=\$(cat DockQ_summary.dat | awk '{print \$2}' | head -1 )
+    int_RMSD=\$(cat DockQ_summary.dat | awk '{print \$2}' | head -3 | tail -1 )
+    Ligand_RMSD=\$(cat DockQ_summary.dat | awk '{print \$2}' | head -4 | tail -1 )
+    DockQ=\$(cat DockQ_summary.dat | awk '{print \$2}' | tail -1 )
 
-    for kk in \$PDBS ; do
-        echo \$kk
-        DockQ.py \${kk}.pdb $ref -useCA -perm1 -perm2 -verbose > DockQ_\${kk}.dat
-        cat DockQ_\${kk}.dat | tail -5 > DockQ_\${kk}_summary.dat
-        
-        #..extract data to summary file
-        Fnat=\$(cat DockQ_\${kk}_summary.dat | awk '{print \$2}' | head -1 )
-        iRMS=\$(cat DockQ_\${kk}_summary.dat | awk '{print \$2}' | head -3 | tail -1 )
-        LRMSD=\$(cat DockQ_\${kk}_summary.dat | awk '{print \$2}' | head -4 | tail -1 )
-        DockQ=\$(cat DockQ_\${kk}_summary.dat | awk '{print \$2}' | tail -1 )
-        echo "\${kk:10} \${Fnat} \${iRMS} \${LRMSD} \${DockQ}" >> DockQ.dat
-    done
+    new_field=''
+    if (( \$(echo "(\$Fnat >= 0.5 && \$int_RMSD <= 1.09)" | bc -l) )) || (( \$(echo "(\$DockQ >= 0.80 )" | bc -l) )); then
+        new_field+="High"
+    elif (( \$(echo "(\$Fnat >= 0.3 && \$Fnat <= 0.5 && \$int_RMSD <= 2.09)" | bc -l) )) || (( \$(echo "(\$Fnat >= 0.5 && \$int_RMSD > 1.09 && \$int_RMSD <= 2.09)" | bc -l) )) || (( \$(echo "(\$DockQ >= 0.49 && \$DockQ < 0.80 ) " | bc -l) )); then
+        new_field+="Medium"
+    elif (( \$(echo "(\$Fnat >= 0.1 && \$Fnat <= 0.3 && \$int_RMSD <= 4.09)" | bc -l) )) || (( \$(echo "(\$Fnat >= 0.3 && \$int_RMSD > 2.09 && \$int_RMSD <= 4.09)" | bc -l) )) || (( \$(echo "(\$DockQ >= 0.23 && \$DockQ < 0.49) " | bc -l) )); then
+        new_field+="Acceptable"
+    elif (( \$(echo "(\$Fnat < 0.1 || \$int_RMSD > 4.09)  " | bc -l) )) && (( \$(echo "(\$DockQ < 0.23 )" | bc -l) )); then
+        new_field+="Incorrect"
+    else
+        new_field+="Undefined"
+    fi
+
+    echo  "Name Fnat int-RMSD Ligand-RMSD DockQ-Score Rank" > DockQ.dat
+    echo -e "$meta \$Fnat \$int_RMSD \$Ligand_RMSD \$DockQ \$new_field" >> DockQ.dat
     """
 }
 
-//cut into 3 ctagerories and sort, and generate different top file ?
+process Voromqa_scores{
+    //publishDir params.outdir
+    tag "${meta}"
 
-process Process_scores{
-    publishDir params.outdir
     input:
-        path score
+        tuple val(meta), path(pdb)
         
     output:
-       path "processed_score.dat"
+        path "VORO_data.dat"
         
     """
-    #!/usr/bin/python3
-newfile = ''
-with open( "$score", "r") as score_file:
-    for raw_line in score_file.readlines():
-        line = raw_line.strip("\\n")
-        if line.startswith("Name"): 
-            newfile += line + " Rank\\n"
-        else:
-            Name, Fnat, int_RMSD, Ligand_RMSD, DockQ_Score = line.split(" ") 
-
-            if (float(Fnat) >= 0.5 and float(int_RMSD) <= 1.09) or float(DockQ_Score) >= 0.80:
-                newfile += line + ' High\\n' 
-            elif (float(Fnat) >= 0.3 and float(Fnat) <= 0.5 and float(int_RMSD) <= 2.09) or (float(Fnat) >= 0.5 and float(int_RMSD) > 1.09 and float(int_RMSD) <= 2.09) or (float(DockQ_Score) >= 0.49 and float(DockQ_Score) < 0.80):
-                newfile += line + ' Medium\\n'
-            elif (float(Fnat) >= 0.1 and float(Fnat) <= 0.3 and float(int_RMSD) <= 4.09) or (float(Fnat) >= 0.3 and float(int_RMSD) > 2.09 and float(int_RMSD) <= 4.09) or (float(DockQ_Score) >= 0.23 and float(DockQ_Score) < 0.49):
-                newfile += line + ' Acceptable\\n'
-            elif (float(Fnat) < 0.1 or float(int_RMSD) > 4.09) and float(DockQ_Score) < 0.23:
-                newfile += line + ' Incorrect\\n'
-            else:
-                newfile += line + ' Undefined\\n'
-
-with open( "processed_score.dat", "w") as out:
-    out.write(newfile)
+    #!/bin/bash
+    
+    voronota-voromqa -i $pdb --score-inter-chain | tail +1 > VORO_data.dat
     """
 }
-
-// process Voromqa_scores{
-//     publishDir params.outdir
-//     input:
-//         path TOP200
-        
-//     output:
-//         path "VORO_data.dat"
-        
-//     """
-//     #!/bin/bash
- 
-//     PDBS=\$(ls Lightdock*_swarm* | sed 's/.pdb//g')
-//     echo "Name Fnat int-RMSD Ligand-RMSD DockQ-Score" > DockQ.dat
-
-//     for kk in \$PDBS ; do
-//         voronota-voromqa -i \${kk}.pdb --score-inter-chain > Voro_\${kk}.dat
-//         cat Voro_\${kk}.dat >> VORO_data.dat
-//     done
-//     sed -i 's/_/-/g' VORO_data.dat
-//     """
-// }
-
-// process Voromqa_scores{
-//     //publishDir params.outdir
-//     tag "${meta}"
-
-//     input:
-//         tuple val(meta), path(pdb)
-        
-//     output:
-//         path "VORO_data.dat"
-        
-//     """
-//     #!/bin/bash
-//     #echo "Name Fnat int-RMSD Ligand-RMSD DockQ-Score" > DockQ.dat
-
-//     voronota-voromqa -i $pdb --score-inter-chain > VORO_data.dat
-//     """
-// }
 
 workflow.onComplete {
     println "Pipeline completed at: $workflow.complete" 
@@ -252,24 +216,28 @@ workflow.onError {
 }
 
 workflow {
-    Setup_calculation(params.ligase , params.target , params.restreint)
+    Setup_calculation(params.ligase , params.target , params.restreint, params.glowworms, params.simulationstep)
     
-    Get_conformation_and_cluster( params.ligase , params.target ,Setup_calculation.out.lightdock_files, Setup_calculation.out.swarm_directories.flatten().map { [it.toString().split('/')[-2], it] }.groupTuple() )
+    Get_conformation_and_cluster( params.ligase , params.target ,Setup_calculation.out.lightdock_files,params.simulationstep, Setup_calculation.out.swarm_directories.flatten().map { [it.toString().split('/')[-2], it] }.groupTuple() )
     
     Make_swarm_dir( Get_conformation_and_cluster.out.collect())
 
-    Rank_LD( Make_swarm_dir.out.swarm_dir)
+    Rank_LighDock( Make_swarm_dir.out.swarm_dir, params.simulationstep)
 
-    Extract_best_200_docking( Rank_LD.out.rank_by_scoring, Make_swarm_dir.out.swarm_dir )
+    Extract_best_200_docking( Rank_LighDock.out.rank_by_scoring, Make_swarm_dir.out.swarm_dir )
 
-    Dock_Q( Extract_best_200_docking.out.top200, params.refpdb)
+    Dock_Q_scores( Extract_best_200_docking.out.top200.flatten().map { [it.toString().split('/')[-1], it] }, params.refpdb)
+        .concat( Channel.of( "Name Fnat int-RMSD Ligand-RMSD DockQ-Score Rank") )
+        .collectFile(name: 'resulat_Dock_Q_scores.txt', skip: 1)
+        .subscribe { f -> 
+			f.copyTo("${params.outdir}")
+        }
     
-    Process_scores( Dock_Q.out)
+    Voromqa_scores( Extract_best_200_docking.out.top200.flatten().map { [it.toString().split('/')[-1], it] })
+        .concat( Channel.of( "Name Fnat int-RMSD Ligand-RMSD DockQ-Score Rank") )
+        .collectFile(name: 'resulat_Voromqa_scores.txt', skip: 1)
+        .subscribe { f -> 
+			f.copyTo("${params.outdir}")
+        }
 
-    //Voromqa_scores( Extract_best_200_docking.out.top200.flatten().map { [it.toString().split('/')[-2], it] }.groupTuple())
-        // .collectFile(name: 'sample.txt', newLine: true)
-        // .subscribe { f -> 
-		// 	f.copyTo("${params.result}")
-        // }
-    
 }
