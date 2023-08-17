@@ -74,6 +74,9 @@ process Get_conformation_and_cluster {
 }
 
 process Make_swarm_dir {
+    // memory '1.5 GB'
+    beforeScript 'ulimit -Ss unlimited'
+
     input:
         path test
 
@@ -96,7 +99,7 @@ process Make_swarm_dir {
     """
 }
 
-process Rank_LighDock{
+process Rank_LightDock{
     publishDir params.outdir
 
     input:
@@ -222,9 +225,9 @@ workflow {
     
     Make_swarm_dir( Get_conformation_and_cluster.out.collect())
 
-    Rank_LighDock( Make_swarm_dir.out.swarm_dir, params.simulationstep)
+    Rank_LightDock( Make_swarm_dir.out.swarm_dir, params.simulationstep)
 
-    Extract_best_200_docking( Rank_LighDock.out.rank_by_scoring, Make_swarm_dir.out.swarm_dir )
+    Extract_best_200_docking( Rank_LightDock.out.rank_by_scoring, Make_swarm_dir.out.swarm_dir )
 
     Dock_Q_scores( Extract_best_200_docking.out.top200.flatten().map { [it.toString().split('/')[-1], it] }, params.refpdb)
         .concat( Channel.of( "Name Fnat int-RMSD Ligand-RMSD DockQ-Score Rank") )
