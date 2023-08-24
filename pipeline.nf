@@ -1,13 +1,4 @@
 #!/usr/bin/env nextflow
- 
-params.ligase = "$baseDir/data/6hax/ligase.pdb"
-params.target = "$baseDir/data/6hax/target.pdb"
-params.refpdb = "$baseDir/data/6hax/ref.pdb"
-params.restreint = "$baseDir/data/6hax/rest.dat"
-params.outdir = "$baseDir/result"
-params.glowworms = 100
-params.simulationstep = 20
-nextflow.enable.dsl=2
 
 
 log.info """\
@@ -42,6 +33,8 @@ process Setup_calculation {
         path "swarm*/*" , emit: swarm_directories
         
     """
+    lightdock3.py -v
+
     lightdock3_setup.py $ligase $target -g $glowworms --noxt --now --noh -rst $restreint --verbose_parser 
     
     lightdock3.py setup.json $step -s fastdfire -c 20
@@ -152,7 +145,7 @@ process Extract_best_200_docking {
 }
 	
 
-    //export PATH="/data3/rmarin/for_gilberto/pipeline/DockQ/:$PATH"
+    //export PATH="/data3/rmarin/for_gilberto/PROTAC_pipeline/DockQ/:$PATH"
 process Dock_Q_scores {
     //publishDir params.outdir
     tag "${meta}"
@@ -210,6 +203,76 @@ process Voromqa_scores{
     """
 }
 
+// process Rank_Top{
+//     input:
+//         val rank
+//         path voromqa_res 
+
+
+// }
+
+
+process Align_Pymol {
+    tag "${meta}"
+
+    input:
+        tuple val(meta), path(pdb)
+        path lig
+        path targ
+
+    output:
+        tuple val(meta), path( '*_withligs_perc.pdb' )
+
+    """
+
+    echo \'cmd.align(\"polymer and name CA and (ligase_lig)\",\"polymer and name CA and (aa)\",quiet=0,object=\"aln_ligase_lig_to_aa\",reset=1)\' > align.py
+    echo \'cmd.align(\"polymer and name CA and (target_lig)\",\"polymer and name CA and (aa)\",quiet=0,object=\"aln_target_lig_to_aa\",reset=1)\' >> align.py
+    echo \'cmd.select(\"sele\",\"none\")\' >> align.py
+    echo \'cmd.select(\"sele\",\"byresi((((sele) or byresi((ligase_lig`707))) and not ((byresi((ligase_lig`707))) and byresi(sele))))\",enable=1)\' >> align.py
+    echo \'cmd.copy_to(\"aa\",\"sele\",zoom=0,quiet=0)\' >> align.py
+    echo \'cmd.select(\"sele\",\"none\")\' >> align.py
+    echo \'cmd.select(\"sele\",\"byresi((((sele) or byresi((target_lig`832))) and not ((byresi((target_lig`832))) and byresi(sele))))\",enable=1)\' >> align.py
+    echo \'cmd.copy_to(\"aa\",\"sele\",zoom=0,quiet=0)\' >> align.py
+    echo \'cmd.save(\"aligned.pdb\")\' >> align.py 
+
+
+    sed "s/aa/${meta}/g" align.py > ${meta}_align.py
+
+    pymol $pdb $lig $targ -cq ${meta}_align.py  
+
+    touch ${meta}_ligs.pdb
+
+    cat aligned.pdb | grep LI1 >> ${meta}_ligs.pdb 
+    cat aligned.pdb | grep LI2 >> ${meta}_ligs.pdb
+
+    cat $pdb > ${meta}_withligs_perc.pdb
+    cat ${meta}_ligs.pdb >> ${meta}_withligs_perc.pdb
+    """
+}
+
+// problem of alias with docker ?
+// python /XLM-Tools/Jwalk.v2.1.py 
+// https://stackoverflow.com/questions/54299805/calling-an-alias-command-from-a-docker-not-working-as-expected
+
+process Run_Jwalk {
+    tag "${meta}"
+
+    input:
+        tuple val(meta), path(pdb)
+        path perc
+        
+    output:
+        path "*"
+
+    """
+    sed 's/HETATM/ATOM  /g' $pdb > new.pdb
+    ls
+    python /XLM-Tools/Jwalk.v2.1.py -xl_list $perc -i new.pdb -ncpus 20 -vox 2
+    """
+    }
+
+
+
 workflow.onComplete {
     println "Pipeline completed at: $workflow.complete" 
 }
@@ -229,18 +292,26 @@ workflow {
 
     Extract_best_200_docking( Rank_LightDock.out.rank_by_scoring, Make_swarm_dir.out.swarm_dir )
 
-    Dock_Q_scores( Extract_best_200_docking.out.top200.flatten().map { [it.toString().split('/')[-1], it] }, params.refpdb)
-        .concat( Channel.of( "Name Fnat int-RMSD Ligand-RMSD DockQ-Score Rank") )
+    Dock_Q_scores( Extract_best_200_docking.out.top200.flatten().map { [it.toString().split('/')[-1].strip(".pdb"), it] }, params.refpdb)
+        .concat( Channel.of( "Name Fnat int-RMSD Ligand-RMSD DockQ-Score Rank") ) // DOESNT WORK ?
         .collectFile(name: 'resulat_Dock_Q_scores.txt', skip: 1)
         .subscribe { f -> 
 			f.copyTo("${params.outdir}")
         }
     
-    Voromqa_scores( Extract_best_200_docking.out.top200.flatten().map { [it.toString().split('/')[-1], it] })
-        .concat( Channel.of( "Name Fnat int-RMSD Ligand-RMSD DockQ-Score Rank") )
+    Voromqa_scores( Extract_best_200_docking.out.top200.flatten().map { [it.toString().split('/')[-1].strip(".pdb"), it] })
+        .concat( Channel.of( "Name Fnat int-RMSD Ligand-RMSD DockQ-Score Rank") ) // DOESNT WORK ?
         .collectFile(name: 'resulat_Voromqa_scores.txt', skip: 1)
         .subscribe { f -> 
 			f.copyTo("${params.outdir}")
         }
+
+    //Rank_Top( Channel.from( 1, 5, 10, 20, 50, 100 ), Voromqa_scores.out )
+    Align_Pymol( Extract_best_200_docking.out.top200.flatten().map { [it.toString().split('/')[-1].strip(".pdb"), it] }, params.ligase_lig, params.target_lig )
+
+    Run_Jwalk( Align_Pymol.out , params.perc)
+
+    //TestJwalk()
+
 
 }
