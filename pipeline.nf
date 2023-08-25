@@ -297,17 +297,21 @@ process Run_Jwalk {
     }
 
 process Group_score {
+    publishDir params.outdir
+
     input :
         path score_DockQ
         path score_voroma
         path score_Jwalk
+        path truc
 
     output :
         path "final.csv"
 
     """
-
-    
+    cat $score_DockQ > final.csv
+    cat $score_voroma >> final.csv
+    cat $score_Jwalk >> final.csv
     """
 }
 
@@ -334,32 +338,26 @@ workflow {
         .concat( Channel.of( "Name Fnat int-RMSD Ligand-RMSD DockQ-Score Rank") ) // DOESNT WORK ?
         .collectFile(name: 'resulat_Dock_Q_scores.txt', skip: 1)
         .subscribe { f -> 
-			f.copyTo("${params.outdir}")
+			f.copyTo("$launchDir")
         }
     
     Voromqa_scores( Extract_best_200_docking.out.top200.flatten().map { [it.toString().split('/')[-1].strip(".pdb"), it] })
         .concat( Channel.of( "Name Fnat int-RMSD Ligand-RMSD DockQ-Score Rank") ) // DOESNT WORK ?
         .collectFile(name: 'resulat_Voromqa_scores.txt', skip: 1)
         .subscribe { f -> 
-			f.copyTo("${params.outdir}")
+			f.copyTo( "$launchDir")
         }
 
     //Rank_Top( Channel.from( 1, 5, 10, 20, 50, 100 ), Voromqa_scores.out )
     Align_Pymol( Extract_best_200_docking.out.top200.flatten().map { [it.toString().split('/')[-1].strip(".pdb"), it] }, params.ligase_lig, params.target_lig )
 
-
-    Channel.from(  Run_Jwalk( Align_Pymol.out , params.perc, params.ligandmin , params.ligandmax)
+    Run_Jwalk( Align_Pymol.out , params.perc, params.ligandmin , params.ligandmax)
         .concat( Channel.of( "Index Model Atom1 Atom2 SASD  Euclidean Distance") ) // DOESNT WORK ?
         .collectFile(name: 'resulat_Jwalk_scores.txt')
-        
-    ).view()
-    // Run_Jwalk( Align_Pymol.out , params.perc, params.ligandmin , params.ligandmax)
-    //     .concat( Channel.of( "Index Model Atom1 Atom2 SASD  Euclidean Distance") ) // DOESNT WORK ?
-    //     .collectFile(name: 'resulat_Jwalk_scores.txt')
-    //     .subscribe { f -> 
-	// 		f.copyTo("${params.outdir}")
-    //     }
-
-    // Group_score( )
+        .subscribe { f -> 
+			f.copyTo("$launchDir")
+      } 
+    
+    Group_score( Channel.fromPath( "${launchDir}/resulat_Dock_Q_scores.txt" ) ,Channel.fromPath( "${launchDir}/resulat_Voromqa_scores.txt" ),Channel.fromPath( "${launchDir}/resulat_Jwalk_scores.txt" ) , Run_Jwalk.out )
 
 }
