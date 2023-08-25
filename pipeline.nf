@@ -17,6 +17,25 @@ glowworms number = $params.glowworms
 Simulation steps = $params.simulationstep
 """
 
+// in your_script.nf
+if ( params.help ) {
+    help = """pipeline.nf: A description of your script and maybe some examples of how
+             |                to run the script
+             |    Command line : ./nextflow run pipeline.nf
+             |Required arguments:
+             |  --input_file  Location of the input file file.
+             |                  [default: ${params.ligase}]
+             |
+             |Optional arguments:
+             |  --use_thing   Do some optional process.
+             |                [default: ${params.glowworms}]
+             |  -w            The NextFlow work directory. Delete the directory once the process
+             |                is finished [default: ${workDir}]""".stripMargin()
+    // Print the help with the stripped margin and exit
+    println(help)
+    exit(0)
+}
+
 
 // ./nextflow run pipeline.nf -with-docker pipeline_gilberto:v0
 
@@ -145,7 +164,6 @@ process Extract_best_200_docking {
 }
 	
 
-    //export PATH="/data3/rmarin/for_gilberto/PROTAC_pipeline/DockQ/:$PATH"
 process Dock_Q_scores {
     //publishDir params.outdir
     tag "${meta}"
@@ -197,19 +215,9 @@ process Voromqa_scores{
         path "VORO_data.dat"
         
     """
-    #!/bin/bash
-    
     voronota-voromqa -i $pdb --score-inter-chain | tail +1 > VORO_data.dat
     """
 }
-
-// process Rank_Top{
-//     input:
-//         val rank
-//         path voromqa_res 
-
-
-// }
 
 
 process Align_Pymol {
@@ -260,18 +268,48 @@ process Run_Jwalk {
     input:
         tuple val(meta), path(pdb)
         path perc
+        val min 
+        val max
         
     output:
-        path "*"
+        path "res_Jwalk.txt"
 
     """
-    sed 's/HETATM/ATOM  /g' $pdb > new.pdb
-    ls
-    python /XLM-Tools/Jwalk.v2.1.py -xl_list $perc -i new.pdb -ncpus 20 -vox 2
+    sed -i 's/HETATM/ATOM  /g' $pdb  
+    
+    python /XLM-Tools/Jwalk.v2.1.py -xl_list $perc -i $pdb -ncpus 20 -vox 2
+    
+
+    touch res_Jwalk.txt
+    sasd_value=\$(tail -n 1 Jwalk_results/*_crosslink_list.txt | cut -d " " -f25)
+
+    if [ \$(tail -n 1 Jwalk_results/*_crosslink_list.txt | grep ^Index* -eq 1 ) ]
+        then
+        echo "?             $pdb       ?  ?  ? ? ?" > res_Jwalk.txt     
+    else
+        if (( \$(echo "\$sasd_value >= $min && \$sasd_value <= $max" | bc) )); then
+                echo "\$(tail -n 1 Jwalk_results/*_crosslink_list.txt) good" > res_Jwalk.txt
+            else
+                echo "\$(tail -n 1 Jwalk_results/*_crosslink_list.txt) bad" > res_Jwalk.txt
+        fi
+    fi
     """
     }
 
+process Group_score {
+    input :
+        path score_DockQ
+        path score_voroma
+        path score_Jwalk
 
+    output :
+        path "final.csv"
+
+    """
+
+    
+    """
+}
 
 workflow.onComplete {
     println "Pipeline completed at: $workflow.complete" 
@@ -309,9 +347,19 @@ workflow {
     //Rank_Top( Channel.from( 1, 5, 10, 20, 50, 100 ), Voromqa_scores.out )
     Align_Pymol( Extract_best_200_docking.out.top200.flatten().map { [it.toString().split('/')[-1].strip(".pdb"), it] }, params.ligase_lig, params.target_lig )
 
-    Run_Jwalk( Align_Pymol.out , params.perc)
 
-    //TestJwalk()
+    Channel.from(  Run_Jwalk( Align_Pymol.out , params.perc, params.ligandmin , params.ligandmax)
+        .concat( Channel.of( "Index Model Atom1 Atom2 SASD  Euclidean Distance") ) // DOESNT WORK ?
+        .collectFile(name: 'resulat_Jwalk_scores.txt')
+        
+    ).view()
+    // Run_Jwalk( Align_Pymol.out , params.perc, params.ligandmin , params.ligandmax)
+    //     .concat( Channel.of( "Index Model Atom1 Atom2 SASD  Euclidean Distance") ) // DOESNT WORK ?
+    //     .collectFile(name: 'resulat_Jwalk_scores.txt')
+    //     .subscribe { f -> 
+	// 		f.copyTo("${params.outdir}")
+    //     }
 
+    // Group_score( )
 
 }
