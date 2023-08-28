@@ -272,7 +272,7 @@ process Run_Jwalk {
         val max
         
     output:
-        path "res_Jwalk.txt"
+        tuple val(meta), path('res_Jwalk.txt' )
 
     """
     sed -i 's/HETATM/ATOM  /g' $pdb  
@@ -285,7 +285,7 @@ process Run_Jwalk {
 
     if [ \$(tail -n 1 Jwalk_results/*_crosslink_list.txt | grep ^Index* -eq 1 ) ]
         then
-        echo "?             $pdb       ?  ?  ? ? ?" > res_Jwalk.txt     
+        echo "? $pdb ? ? ? ? ?" > res_Jwalk.txt     
     else
         if (( \$(echo "\$sasd_value >= $min && \$sasd_value <= $max" | bc) )); then
                 echo "\$(tail -n 1 Jwalk_results/*_crosslink_list.txt) good" > res_Jwalk.txt
@@ -303,15 +303,41 @@ process Group_score {
         path score_DockQ
         path score_voroma
         path score_Jwalk
-        path truc
+        val truc
 
     output :
         path "final.csv"
 
+   
     """
-    cat $score_DockQ > final.csv
-    cat $score_voroma >> final.csv
-    cat $score_Jwalk >> final.csv
+    #!/usr/bin/python
+    import pandas as pd
+
+    col_dockQ = "Name Fnat int-RMSD Ligand-RMSD DockQ-Score RankdockQ".split(" ")
+    df_dockQ = pd.read_csv("resulat_Dock_Q_scores.txt", sep=' ', names=col_dockQ, on_bad_lines='warn')
+    df_dockQ['Name'] = df_dockQ['Name'].apply(lambda x: x[10:])
+    #Lightdock_swarm_354_28
+
+
+    col_voroma = "input voromqa_v1_score voromqa_v1_residues voromqa_v1_atoms sel_voromqa_v1_score sel_voromqa_v1_atoms sel_voromqa_v1_contacts sel_voromqa_v1_area sel_voromqa_v1_area_unk sel_voromqa_v1_energy sel_voromqa_v1_energy_norm sel_voromqa_v1_clash_score".split(" ")
+    df_voroma = pd.read_csv("resulat_Voromqa_scores.txt", sep=' ', names=col_voroma, on_bad_lines='warn')
+    df_voroma['input'] = df_voroma['input'].apply(lambda x: x[10:].strip(".pdb"))
+
+    col_Jwalk = "Index Model Atom1 Atom2 SASD Distance rankJwalk".split(" ")
+    df_Jwalk = pd.read_csv("resulat_Jwalk_scores.txt", sep=r'\s+', names=col_Jwalk, on_bad_lines='warn')
+    df_Jwalk=df_Jwalk.drop(['Index'], axis=1)
+    df_Jwalk['Model'] = df_Jwalk['Model'].apply(lambda x: x.strip("_withligs_perc.pdb")[10:])
+
+
+    # Merge df_dockQ and df_voroma on 'Name' and 'input'
+    merged_df = pd.merge(df_dockQ, df_voroma, left_on='Name', right_on='input', how='inner')
+
+    # Merge merged_df and df_Jwalk on 'Model'
+    final_df = pd.merge(merged_df, df_Jwalk, left_on='Name', right_on='Model', how='inner')
+
+    final_df=final_df.drop(['input', 'Model'], axis=1).sort_values(by=['sel_voromqa_v1_energy_norm'],ascending=False)
+    # Print the final merged DataFrame
+    final_df.to_csv( "final.csv", index=False)
     """
 }
 
@@ -335,14 +361,14 @@ workflow {
     Extract_best_200_docking( Rank_LightDock.out.rank_by_scoring, Make_swarm_dir.out.swarm_dir )
 
     Dock_Q_scores( Extract_best_200_docking.out.top200.flatten().map { [it.toString().split('/')[-1].strip(".pdb"), it] }, params.refpdb)
-        .concat( Channel.of( "Name Fnat int-RMSD Ligand-RMSD DockQ-Score Rank") ) // DOESNT WORK ?
+        //.concat( Channel.of( "Name Fnat int-RMSD Ligand-RMSD DockQ-Score Rank") ) // DOESNT WORK ?
         .collectFile(name: 'resulat_Dock_Q_scores.txt', skip: 1)
         .subscribe { f -> 
 			f.copyTo("$launchDir")
         }
     
     Voromqa_scores( Extract_best_200_docking.out.top200.flatten().map { [it.toString().split('/')[-1].strip(".pdb"), it] })
-        .concat( Channel.of( "Name Fnat int-RMSD Ligand-RMSD DockQ-Score Rank") ) // DOESNT WORK ?
+        //.concat( Channel.of( "Name Fnat int-RMSD Ligand-RMSD DockQ-Score Rank") ) // DOESNT WORK ?
         .collectFile(name: 'resulat_Voromqa_scores.txt', skip: 1)
         .subscribe { f -> 
 			f.copyTo( "$launchDir")
@@ -352,12 +378,16 @@ workflow {
     Align_Pymol( Extract_best_200_docking.out.top200.flatten().map { [it.toString().split('/')[-1].strip(".pdb"), it] }, params.ligase_lig, params.target_lig )
 
     Run_Jwalk( Align_Pymol.out , params.perc, params.ligandmin , params.ligandmax)
-        .concat( Channel.of( "Index Model Atom1 Atom2 SASD  Euclidean Distance") ) // DOESNT WORK ?
+        .map { it[1]}
+        //.concat( Channel.of( "Index Model Atom1 Atom2 SASD  Euclidean Distance") ) // DOESNT WORK ?
         .collectFile(name: 'resulat_Jwalk_scores.txt')
         .subscribe { f -> 
 			f.copyTo("$launchDir")
       } 
     
-    Group_score( Channel.fromPath( "${launchDir}/resulat_Dock_Q_scores.txt" ) ,Channel.fromPath( "${launchDir}/resulat_Voromqa_scores.txt" ),Channel.fromPath( "${launchDir}/resulat_Jwalk_scores.txt" ) , Run_Jwalk.out )
-
+    Group_score( 
+        Channel.fromPath( "${launchDir}/resulat_Dock_Q_scores.txt" ) ,
+        Channel.fromPath( "${launchDir}/resulat_Voromqa_scores.txt" ),
+        Channel.fromPath( "${launchDir}/resulat_Jwalk_scores.txt" ) , 
+        Run_Jwalk.out.collect() )
 }
