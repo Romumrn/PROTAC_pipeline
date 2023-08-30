@@ -2,42 +2,64 @@
 
 
 log.info """\
-            Protac PIPELINE 
+PROTAC PIPELINE
+GitHub Repository: https://github.com/Romumrn/PROTAC_pipeline
+=============================================================
+Ligase PDB:        ${params.ligase}
+Ligase Ligand PDB: ${params.ligase_lig}
+Target Ligand PDB: ${params.target_lig}
+Target PDB:        ${params.target}
+Reference PDB:     ${params.refpdb}
+Restraint Data:    ${params.restreint}
+Perc Data:         ${params.perc}
+Output Directory:  ${params.outdir}
 
-    https://github.com/Romumrn/PROTAC_pipeline
-=================================================
-ligase = $params.ligase
-target = $params.target
-reference = $params.refpdb
-restreint = $params.restreint
-outdir = $params.outdir
-
--------------------------------------------------
-glowworms number = $params.glowworms
-Simulation steps = $params.simulationstep
+-------------------------------------------------------------
+Glowworms Number:     ${params.glowworms}
+Simulation Steps:     ${params.simulationstep}
 """
 
 // in your_script.nf
 if ( params.help ) {
-    help = """pipeline.nf: A description of your script and maybe some examples of how
-             |                to run the script
-             |    Command line : ./nextflow run pipeline.nf
-             |Required arguments:
-             |  --input_file  Location of the input file file.
-             |                  [default: ${params.ligase}]
-             |
-             |Optional arguments:
-             |  --use_thing   Do some optional process.
-             |                [default: ${params.glowworms}]
-             |  -w            The NextFlow work directory. Delete the directory once the process
-             |                is finished [default: ${workDir}]""".stripMargin()
-    // Print the help with the stripped margin and exit
+    help = """  
+    PROTAC PIPELINE
+
+A Nextflow script for running the PROTAC pipeline, which combines restraint-based LightDock,
+energy-based rescoring, and minimal solvent-accessible surface distance filtering to
+produce PROTAC-compatible Protein-Protein Interactions (PPIs).
+Please be sure that you have singularity installed on your computer. 
+If not please follow this link: https://docs.sylabs.io/guides/3.0/user-guide/installation.html.
+
+  Usage: ./nextflow run pipeline.nf
+             
+Required arguments:
+  --ligase       Location of the ligase PDB file.
+                 [default: ${params.ligase}]
+  --ligase_lig   Location of the ligase ligand PDB file.
+                 [default: ${params.ligase_lig}]
+  --target_lig   Location of the target ligand PDB file.
+                 [default: ${params.target_lig}]
+  --target       Location of the target PDB file.
+                 [default: ${params.target}]
+  --refpdb       Location of the reference PDB file.
+                 [default: ${params.refpdb}]
+  --restreint    Location of the restraint data file.
+                 [default: ${params.restreint}]
+  --perc         Location of the perc data file.
+                 [default: ${params.perc}]
+
+Optional arguments:
+  --outdir       Output directory for the results.
+                 [default: ${params.outdir}]
+  --glowworms    Number of glowworms for simulation.
+                 [default: ${params.glowworms}]
+  --simulationstep  Simulation steps.
+                 [default: ${params.simulationstep}]
+"""
     println(help)
     exit(0)
+
 }
-
-
-// ./nextflow run pipeline.nf -with-docker pipeline_gilberto:v0
 
 process Setup_calculation {
     input : 
@@ -61,7 +83,6 @@ process Setup_calculation {
 }
 
 process Get_conformation_and_cluster {
-    //publishDir params.outdir
     tag "${meta}"
 
     input:
@@ -86,7 +107,6 @@ process Get_conformation_and_cluster {
 }
 
 process Make_swarm_dir {
-    // memory '1.5 GB'
     beforeScript 'ulimit -Ss unlimited'
 
     input:
@@ -165,7 +185,6 @@ process Extract_best_200_docking {
 	
 
 process Dock_Q_scores {
-    //publishDir params.outdir
     tag "${meta}"
 
     input:
@@ -205,7 +224,6 @@ process Dock_Q_scores {
 }
 
 process Voromqa_scores{
-    //publishDir params.outdir
     tag "${meta}"
 
     input:
@@ -258,7 +276,7 @@ process Align_Pymol {
     """
 }
 
-// problem of alias with docker ?
+// Problem of alias with docker ?
 // python /XLM-Tools/Jwalk.v2.1.py 
 // https://stackoverflow.com/questions/54299805/calling-an-alias-command-from-a-docker-not-working-as-expected
 
@@ -314,17 +332,17 @@ process Group_score {
     import pandas as pd
 
     col_dockQ = "Name Fnat int-RMSD Ligand-RMSD DockQ-Score RankdockQ".split(" ")
-    df_dockQ = pd.read_csv("resulat_Dock_Q_scores.txt", sep=' ', names=col_dockQ, on_bad_lines='warn')
+    df_dockQ = pd.read_csv("$score_DockQ", sep=' ', names=col_dockQ, on_bad_lines='warn')
     df_dockQ['Name'] = df_dockQ['Name'].apply(lambda x: x[10:])
     #Lightdock_swarm_354_28
 
 
     col_voroma = "input voromqa_v1_score voromqa_v1_residues voromqa_v1_atoms sel_voromqa_v1_score sel_voromqa_v1_atoms sel_voromqa_v1_contacts sel_voromqa_v1_area sel_voromqa_v1_area_unk sel_voromqa_v1_energy sel_voromqa_v1_energy_norm sel_voromqa_v1_clash_score".split(" ")
-    df_voroma = pd.read_csv("resulat_Voromqa_scores.txt", sep=' ', names=col_voroma, on_bad_lines='warn')
+    df_voroma = pd.read_csv("$score_voroma", sep=' ', names=col_voroma, on_bad_lines='warn')
     df_voroma['input'] = df_voroma['input'].apply(lambda x: x[10:].strip(".pdb"))
 
     col_Jwalk = "Index Model Atom1 Atom2 SASD Distance rankJwalk".split(" ")
-    df_Jwalk = pd.read_csv("resulat_Jwalk_scores.txt", sep=r'\s+', names=col_Jwalk, on_bad_lines='warn')
+    df_Jwalk = pd.read_csv("$score_Jwalk", sep=r'\s+', names=col_Jwalk, on_bad_lines='warn')
     df_Jwalk=df_Jwalk.drop(['Index'], axis=1)
     df_Jwalk['Model'] = df_Jwalk['Model'].apply(lambda x: x.strip("_withligs_perc.pdb")[10:])
 
@@ -346,7 +364,7 @@ workflow.onComplete {
 }
 
 workflow.onError {
-    println "Oops... Pipeline execution stopped with the following message: ${workflow.errorMessage}. Please contact xxx.mail"
+    println "Oops... Pipeline execution stopped with the following message: ${workflow.errorMessage}. Please raise an issue on github, if you cant handle the issue."
 }
 
 workflow {
@@ -362,32 +380,32 @@ workflow {
 
     Dock_Q_scores( Extract_best_200_docking.out.top200.flatten().map { [it.toString().split('/')[-1].strip(".pdb"), it] }, params.refpdb)
         //.concat( Channel.of( "Name Fnat int-RMSD Ligand-RMSD DockQ-Score Rank") ) // DOESNT WORK ?
-        .collectFile(name: 'resulat_Dock_Q_scores.txt', skip: 1)
+        .collectFile(name: '.resulat_Dock_Q_scores.txt', skip: 1)
         .subscribe { f -> 
 			f.copyTo("$launchDir")
         }
     
     Voromqa_scores( Extract_best_200_docking.out.top200.flatten().map { [it.toString().split('/')[-1].strip(".pdb"), it] })
         //.concat( Channel.of( "Name Fnat int-RMSD Ligand-RMSD DockQ-Score Rank") ) // DOESNT WORK ?
-        .collectFile(name: 'resulat_Voromqa_scores.txt', skip: 1)
+        .collectFile(name: '.resulat_Voromqa_scores.txt', skip: 1)
         .subscribe { f -> 
 			f.copyTo( "$launchDir")
         }
 
-    //Rank_Top( Channel.from( 1, 5, 10, 20, 50, 100 ), Voromqa_scores.out )
     Align_Pymol( Extract_best_200_docking.out.top200.flatten().map { [it.toString().split('/')[-1].strip(".pdb"), it] }, params.ligase_lig, params.target_lig )
 
     Run_Jwalk( Align_Pymol.out , params.perc, params.ligandmin , params.ligandmax)
         .map { it[1]}
         //.concat( Channel.of( "Index Model Atom1 Atom2 SASD  Euclidean Distance") ) // DOESNT WORK ?
-        .collectFile(name: 'resulat_Jwalk_scores.txt')
+        .collectFile(name: '.resulat_Jwalk_scores.txt')
         .subscribe { f -> 
 			f.copyTo("$launchDir")
       } 
     
     Group_score( 
-        Channel.fromPath( "${launchDir}/resulat_Dock_Q_scores.txt" ) ,
-        Channel.fromPath( "${launchDir}/resulat_Voromqa_scores.txt" ),
-        Channel.fromPath( "${launchDir}/resulat_Jwalk_scores.txt" ) , 
+        Channel.fromPath( "${launchDir}/.resulat_Dock_Q_scores.txt" ) ,
+        Channel.fromPath( "${launchDir}/.resulat_Voromqa_scores.txt" ),
+        Channel.fromPath( "${launchDir}/.resulat_Jwalk_scores.txt" ) , 
         Run_Jwalk.out.collect() )
+
 }
